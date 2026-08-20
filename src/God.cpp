@@ -1,0 +1,286 @@
+#include "God.h"
+
+#include "EventSystem.h"
+#include "MazeGenerator.h"
+
+#include <algorithm>
+#include <random>
+#include <sstream>
+
+int expectedPowerCost(GodActionType action) {
+    switch (action) {
+        case GodActionType::SendMessage:
+            return COST_SEND_MESSAGE;
+        case GodActionType::SpawnEnemy:
+            return COST_SPAWN_ENEMY;
+        case GodActionType::TeleportPlayer:
+            return COST_TELEPORT;
+        case GodActionType::RegenerateMaze:
+            return COST_REGENERATE;
+        case GodActionType::None:
+            return 0;
+    }
+    return 0;
+}
+
+int addGodPower(int current, int amount) {
+    return std::max(0, std::min(MAX_GOD_POWER, current + amount));
+}
+
+bool isValidTeleportParameter(const std::string& parameter) {
+    return parameter == "random_safe" || parameter == "dead_end" || parameter == "far_from_exit" ||
+           parameter == "near_enemy";
+}
+
+bool isValidSpawnParameter(const std::string& parameter) {
+    return parameter == "random" || parameter == "near_player" || parameter == "far_from_player";
+}
+
+namespace {
+
+bool occupiedByActiveEnemy(const WorldState& world, GridPosition pos, int ignoreId = -1) {
+    for (const Enemy& enemy : world.enemies) {
+        if (enemy.active && enemy.id != ignoreId && enemy.position == pos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<GridPosition> candidateFloors(const WorldState& world, bool excludePlayer) {
+    std::vector<GridPosition> floors;
+    for (GridPosition p : world.maze.reachableFloors(world.maze.start())) {
+        if (excludePlayer && p == world.player.position) {
+            continue;
+        }
+        floors.push_back(p);
+    }
+    return floors;
+}
+
+std::mt19937 decisionRng(const WorldState& world, int gameTime) {
+    return std::mt19937(world.mazeSeed ^ static_cast<uint32_t>(gameTime * 2654435761u) ^
+                        static_cast<uint32_t>(world.profile.distanceTravelled));
+}
+
+std::optional<GridPosition> pickTeleportTarget(
+    const WorldState& world, const std::string& parameter, std::mt19937& rng) {
+    auto floors = candidateFloors(world, false);
+    if (floors.empty()) {
+        return std::nullopt;
+    }
+
+    if (parameter == "dead_end") {
+        std::vector<GridPosition> deadEnds;
+        for (GridPosition p : floors) {
+            if (world.maze.walkableNeighborCount(p) == 1) {
+                deadEnds.push_back(p);
+            }
+        }
+        if (!deadEnds.empty()) {
+            std::uniform_int_distribution<size_t> pick(0, deadEnds.size() - 1);
+            return deadEnds[pick(rng)];
+        }
+    }
+
+    if (parameter == "far_from_exit") {
+        GridPosition best = floors.front();
+        int bestDist = -1;
+        for (GridPosition p : floors) {
+            auto dist = world.maze.bfsDistance(p, world.maze.exitPosition());
+            if (dist && *dist > bestDist) {
+                bestDist = *dist;
+                best = p;
+            }
+        }
+        return best;
+    }
+
+    if (parameter == "near_enemy") {
+        GridPosition best = floors.front();
+        int bestDist = 1'000'000;
+        bool found = false;
+        for (GridPosition p : floors) {
+            for (const Enemy& enemy : world.enemies) {
+                if (!enemy.active) {
+                    continue;
+                }
+                const int d = manhattan(p, enemy.position);
+                if (d < bestDist) {
+                    bestDist = d;
+                    best = p;
+                    found = true;
+                }
+            }
+        }
+        if (found) {
+            return best;
+        }
+    }
+
+    std::uniform_int_distribution<size_t> pick(0, floors.size() - 1);
+    return floors[pick(rng)];
+}
+
+std::optional<GridPosition> pickSpawnTarget(
+    const WorldState& world, const std::string& parameter, std::mt19937& rng) {
+    auto floors = candidateFloors(world, true);
+    floors.erase(
+        std::remove_if(
+            floors.begin(),
+            floors.end(),
+            [&](GridPosition p) { return occupiedByActiveEnemy(world, p); }),
+        floors.end());
+    if (floors.empty()) {
+        floors = candidateFloors(world, true);
+    }
+    if (floors.empty()) {
+        return std::nullopt;
+    }
+
+    if (parameter == "near_player") {
+        GridPosition best = floors.front();
+        int bestDist = 1'000'000;
+        for (GridPosition p : floors) {
+            const int d = manhattan(p, world.player.position);
+            if (d >= 1 && d < bestDist) {
+                bestDist = d;
+                best = p;
+            }
+        }
+        return best;
+    }
+
+    if (parameter == "far_from_player") {
+        GridPosition best = floors.front();
+        int bestDist = -1;
+        for (GridPosition p : floors) {
+            const int d = manhattan(p, world.player.position);
+            if (d > bestDist) {
+                bestDist = d;
+                best = p;
+            }
+        }
+        return best;
+    }
+
+    std::uniform_int_distribution<size_t> pick(0, floors.size() - 1);
+    return floors[pick(rng)];
+}
+
+bool spawnEnemyAt(WorldState& world, GridPosition pos) {
+    if (!world.maze.isWalkable(pos) || pos == world.player.position) {
+        return false;
+    }
+    if (activeEnemyCount(world.enemies) >= MAX_ENEMIES) {
+        return false;
+    }
+
+    for (Enemy& enemy : world.enemies) {
+        if (!enemy.active) {
+            enemy = Enemy{};
+            enemy.id = world.nextEnemyId++;
+            enemy.position = pos;
+            enemy.active = true;
+            return true;
+        }
+    }
+
+    Enemy enemy;
+    enemy.id = world.nextEnemyId++;
+    enemy.position = pos;
+    enemy.active = true;
+    world.enemies.push_back(enemy);
+    return true;
+}
+
+}  // namespace
+
+GodApplyOutcome applyGodDecision(
+    WorldState& world,
+    const GodDecision& decision,
+    EventSystem& events,
+    MazeGenerator& gen,
+    int gameTime) {
+    GodApplyOutcome outcome;
+
+    if (decision.action == GodActionType::None) {
+        outcome.result = GodApplyResult::Applied;
+        return outcome;
+    }
+
+    const int cost = expectedPowerCost(decision.action);
+    if (world.godPower < cost) {
+        outcome.result = GodApplyResult::RejectedInsufficientPower;
+        return outcome;
+    }
+
+    std::mt19937 rng = decisionRng(world, gameTime);
+
+    switch (decision.action) {
+        case GodActionType::SendMessage: {
+            world.godPower -= cost;
+            std::ostringstream desc;
+            desc << "THE GOD spoke: \"" << decision.message << "\"";
+            events.record(EventType::GodMessageSent, gameTime, desc.str());
+            syncRecentEvents(world, events);
+            outcome.result = GodApplyResult::Applied;
+            outcome.displayMessage = decision.message;
+            return outcome;
+        }
+        case GodActionType::SpawnEnemy: {
+            if (!isValidSpawnParameter(decision.parameter) || activeEnemyCount(world.enemies) >= MAX_ENEMIES) {
+                outcome.result = GodApplyResult::RejectedInvalid;
+                return outcome;
+            }
+            auto target = pickSpawnTarget(world, decision.parameter, rng);
+            if (!target || !spawnEnemyAt(world, *target)) {
+                outcome.result = GodApplyResult::RejectedInvalid;
+                return outcome;
+            }
+            world.godPower -= cost;
+            std::ostringstream desc;
+            desc << "An enemy spawned at (" << target->x << ", " << target->y << ").";
+            events.record(EventType::EnemySpawned, gameTime, desc.str());
+            syncRecentEvents(world, events);
+            outcome.result = GodApplyResult::Applied;
+            return outcome;
+        }
+        case GodActionType::TeleportPlayer: {
+            if (!isValidTeleportParameter(decision.parameter)) {
+                outcome.result = GodApplyResult::RejectedInvalid;
+                return outcome;
+            }
+            auto target = pickTeleportTarget(world, decision.parameter, rng);
+            if (!target || !world.maze.isWalkable(*target)) {
+                outcome.result = GodApplyResult::RejectedInvalid;
+                return outcome;
+            }
+            world.player.position = *target;
+            world.godPower -= cost;
+            std::ostringstream desc;
+            desc << "Player teleported to (" << target->x << ", " << target->y << ") via " << decision.parameter
+                 << ".";
+            events.record(EventType::PlayerTeleported, gameTime, desc.str());
+            syncRecentEvents(world, events);
+            outcome.result = GodApplyResult::Applied;
+            return outcome;
+        }
+        case GodActionType::RegenerateMaze: {
+            const uint32_t newSeed = world.mazeSeed * 1664525u + 1013904223u + 1u;
+            rebuildMaze(world, gen, newSeed, true);
+            world.profile.mazeRegenerationsExperienced += 1;
+            world.currentLevel += 1;
+            world.godPower -= cost;
+            events.record(EventType::MazeRegenerated, gameTime, "The maze was regenerated by the God.");
+            syncRecentEvents(world, events);
+            outcome.result = GodApplyResult::Applied;
+            return outcome;
+        }
+        case GodActionType::None:
+            break;
+    }
+
+    outcome.result = GodApplyResult::RejectedInvalid;
+    return outcome;
+}
