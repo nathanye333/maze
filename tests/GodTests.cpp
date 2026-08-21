@@ -3,6 +3,7 @@
 #include "EventSystem.h"
 #include "God.h"
 #include "MazeGenerator.h"
+#include "MockGod.h"
 #include "WorldState.h"
 
 namespace {
@@ -122,4 +123,39 @@ void runGodTests(int& passed, int& failed) {
     spawn.parameter = "on_player";
     outcome = applyGodDecision(world, spawn, events, gen, 10);
     CHECK(outcome.result == GodApplyResult::RejectedInvalid, "invalid spawn parameter is rejected");
+
+    CHECK(clampFavorDelta(9) == 5, "favor delta is capped at 5");
+    CHECK(clampFavorDelta(-9) == -5, "favor delta is capped at -5");
+    CHECK(addGodFavor(48, 5) == MAX_GOD_FAVOR, "god favor cannot exceed max");
+    CHECK(addGodFavor(-48, -5) == MIN_GOD_FAVOR, "god favor cannot go below min");
+
+    world.godFavor = 0;
+    GodDecision favorMessage;
+    favorMessage.action = GodActionType::SendMessage;
+    favorMessage.message = "Noted.";
+    favorMessage.favorDelta = 3;
+    outcome = applyGodDecision(world, favorMessage, events, gen, 11);
+    CHECK(outcome.result == GodApplyResult::Applied, "favor-bearing message is applied");
+    CHECK(world.godFavor == 3, "applied decision changes god favor");
+
+    GodDecision parsed;
+    CHECK(parseGodDecisionJson(
+              R"({"action":"teleport_player","parameter":"dead_end","message":"","power_cost":2,"favor_delta":-2})",
+              parsed),
+          "valid god json parses");
+    CHECK(parsed.action == GodActionType::TeleportPlayer, "parsed action maps from snake_case");
+    CHECK(parsed.parameter == "dead_end", "parsed parameter is preserved");
+    CHECK(parsed.favorDelta == -2, "parsed favor delta is preserved");
+
+    CHECK(!parseGodDecisionJson("not json", parsed), "invalid god json is rejected");
+    CHECK(parsed.action == GodActionType::None, "failed parse yields none");
+
+    MockGod mock;
+    WorldState shrineWorld = makeWorld(gen, events, 2);
+    mock.beginEvaluate(shrineWorld, "shrine", "Spare me.");
+    CHECK(!mock.isBusy(), "mock god finishes immediately");
+    GodDecision mockDecision;
+    CHECK(mock.tryTakeDecision(mockDecision), "mock god yields a decision");
+    CHECK(mockDecision.action == GodActionType::SendMessage, "shrine prayer gets a message");
+    CHECK(mockDecision.favorDelta == 1, "mock shrine prayer grants a little favor");
 }

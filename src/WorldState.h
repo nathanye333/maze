@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 struct PlayerProfile {
@@ -48,4 +49,7 @@ void initializeWorld(WorldState& world, MazeGenerator& gen, EventSystem& events,
 void restartCurrentMaze(WorldState& world, MazeGenerator& gen, EventSystem& events, int gameTime);
 void rebuildMaze(WorldState& world, MazeGenerator& gen, uint32_t seed, bool keepHealth);
 void syncRecentEvents(WorldState& world, const EventSystem& events);
-nlohmann::json toJson(const WorldState& world);
+nlohmann::json toJson(
+    const WorldState& world,
+    std::string_view trigger = "ambient",
+    std::string_view playerMessage = {});

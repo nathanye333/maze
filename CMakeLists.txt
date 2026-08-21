@@ -30,9 +30,18 @@ FetchContent_Declare(
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(json)
 
+FetchContent_Declare(
+    httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG v0.18.3
+)
+set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(httplib)
+
 set(CORE_SOURCES
     src/Maze.cpp
     src/MazeGenerator.cpp
+    src/Vision.cpp
     src/Player.cpp
     src/Enemy.cpp
     src/Shrine.cpp
@@ -47,8 +56,26 @@ add_library(qwen_maze_core STATIC ${CORE_SOURCES})
 target_include_directories(qwen_maze_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(qwen_maze_core PUBLIC nlohmann_json::nlohmann_json)
 
-add_executable(qwen-maze src/main.cpp src/Game.cpp)
-target_link_libraries(qwen-maze PRIVATE qwen_maze_core raylib)
+add_executable(qwen-maze src/main.cpp src/Game.cpp src/OllamaGod.cpp src/EnvFile.cpp)
+target_link_libraries(qwen-maze PRIVATE qwen_maze_core raylib httplib::httplib)
+if(WIN32)
+    target_link_libraries(qwen-maze PRIVATE ws2_32)
+endif()
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/.env")
+    set(QWEN_MAZE_ENV_FILE "${CMAKE_SOURCE_DIR}/.env")
+else()
+    set(QWEN_MAZE_ENV_FILE "${CMAKE_SOURCE_DIR}/.env.example")
+endif()
+
+add_custom_command(
+    TARGET qwen-maze
+    POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${QWEN_MAZE_ENV_FILE}"
+            "$<TARGET_FILE_DIR:qwen-maze>/.env"
+    COMMENT "Copy .env next to qwen-maze"
+)
 
 add_executable(qwen-maze-tests
     tests/TestMain.cpp

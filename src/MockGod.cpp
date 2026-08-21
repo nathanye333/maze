@@ -24,14 +24,37 @@ int distanceToExit(const WorldState& world) {
 
 }  // namespace
 
-GodDecision MockGod::evaluate(const WorldState& world) {
+void MockGod::beginEvaluate(
+    const WorldState& world, std::string_view trigger, std::string_view playerMessage) {
+    pending_ = decide(world, trigger, playerMessage);
+}
+
+bool MockGod::isBusy() const {
+    return false;
+}
+
+bool MockGod::tryTakeDecision(GodDecision& out) {
+    if (!pending_) {
+        return false;
+    }
+    out = *pending_;
+    pending_.reset();
+    return true;
+}
+
+GodDecision MockGod::decide(
+    const WorldState& world, std::string_view trigger, std::string_view playerMessage) {
     GodDecision decision;
     decision.action = GodActionType::None;
 
-    if (world.profile.godInteractions > lastGodInteractions_) {
-        lastGodInteractions_ = world.profile.godInteractions;
+    if (trigger == "shrine") {
         decision.action = GodActionType::SendMessage;
-        decision.message = kMessages[world.profile.godInteractions % 4];
+        if (!playerMessage.empty()) {
+            decision.message = "Your words reach me.";
+            decision.favorDelta = 1;
+        } else {
+            decision.message = kMessages[world.profile.godInteractions % 4];
+        }
         decision.powerCost = expectedPowerCost(decision.action);
         return decision;
     }
@@ -57,15 +80,6 @@ GodDecision MockGod::evaluate(const WorldState& world) {
         lastSpawnKillCount_ = world.profile.enemiesKilled;
         decision.action = GodActionType::SpawnEnemy;
         decision.parameter = "near_player";
-        decision.powerCost = expectedPowerCost(decision.action);
-        return decision;
-    }
-
-    if (world.profile.godInteractions >= 1 && lastTeleportInteractions_ < world.profile.godInteractions &&
-        world.godPower >= COST_TELEPORT) {
-        lastTeleportInteractions_ = world.profile.godInteractions;
-        decision.action = GodActionType::TeleportPlayer;
-        decision.parameter = "dead_end";
         decision.powerCost = expectedPowerCost(decision.action);
         return decision;
     }

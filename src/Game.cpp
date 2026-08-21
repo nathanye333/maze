@@ -2,32 +2,97 @@
 
 #include "Enemy.h"
 #include "MockGod.h"
+#include "OllamaGod.h"
 #include "Player.h"
 #include "Shrine.h"
+#include "Vision.h"
 
 #include <raylib.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <sstream>
+#include <vector>
 
 namespace {
-constexpr int kScreenWidth = 800;
-constexpr int kScreenHeight = 600;
+
+constexpr int kScreenWidth = 1280;
+constexpr int kScreenHeight = 720;
 constexpr int kCellSize = 16;
 constexpr float kGodMessageDuration = 4.0f;
-constexpr int kCloseToExitDistance = 6;
-constexpr int kCloseToExitResetDistance = 10;
+
+std::unique_ptr<God> makeGod() {
+    const char* godMode = std::getenv("QWEN_MAZE_GOD");
+    const char* modelEnv = std::getenv("OLLAMA_MODEL");
+    const bool useOllama =
+        (godMode != nullptr && std::strcmp(godMode, "ollama") == 0) || (modelEnv != nullptr && modelEnv[0] != '\0');
+    if (!useOllama) {
+        return std::make_unique<MockGod>();
+    }
+
+    std::string host = "127.0.0.1";
+    int port = 11434;
+    if (const char* hostEnv = std::getenv("OLLAMA_HOST")) {
+        std::string value = hostEnv;
+        if (value.rfind("http://", 0) == 0) {
+            value = value.substr(7);
+        } else if (value.rfind("https://", 0) == 0) {
+            value = value.substr(8);
+        }
+        const size_t colon = value.find(':');
+        if (colon == std::string::npos) {
+            host = value;
+        } else {
+            host = value.substr(0, colon);
+            port = std::atoi(value.substr(colon + 1).c_str());
+            if (port <= 0) {
+                port = 11434;
+            }
+        }
+    }
+
+    const std::string model = (modelEnv != nullptr && modelEnv[0] != '\0') ? modelEnv : "qwen3.6";
+    return std::make_unique<OllamaGod>(host, port, model);
+}
+
+Color favorTint(int favor) {
+    const float t = (static_cast<float>(favor - MIN_GOD_FAVOR) / static_cast<float>(MAX_GOD_FAVOR - MIN_GOD_FAVOR));
+    const float clamped = std::clamp(t, 0.0f, 1.0f);
+    if (clamped < 0.5f) {
+        const float u = clamped * 2.0f;
+        return Color{
+            static_cast<unsigned char>(180 + static_cast<int>((80 - 180) * u)),
+            static_cast<unsigned char>(20 + static_cast<int>((70 - 20) * u)),
+            static_cast<unsigned char>(30 + static_cast<int>((140 - 30) * u)),
+            255};
+    }
+    const float u = (clamped - 0.5f) * 2.0f;
+    return Color{
+        static_cast<unsigned char>(80 + static_cast<int>((220 - 80) * u)),
+        static_cast<unsigned char>(70 + static_cast<int>((180 - 70) * u)),
+        static_cast<unsigned char>(140 + static_cast<int>((70 - 140) * u)),
+        255};
+}
+
 }  // namespace
 
-Game::Game() : rng_(1), god_(std::make_unique<MockGod>()) {
+Game::Game() : god_(makeGod()), rng_(std::random_device{}()) {
     initializeWorld(world_, generator_, events_, 1, 0);
+    scheduleNextAmbientEval();
 }
 
 void Game::run() {
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(kScreenWidth, kScreenHeight, "Qwen Maze");
+    SetWindowMinSize(640, 360);
     SetTargetFPS(60);
 
     while (!WindowShouldClose()) {
+        if (IsKeyPressed(KEY_F11)) {
+            ToggleFullscreen();
+        }
         update(GetFrameTime());
         draw();
     }
@@ -35,42 +100,74 @@ void Game::run() {
     CloseWindow();
 }
 
-void Game::requestGodEvaluation(int gameTime) {
+void Game::scheduleNextAmbientEval() {
+    std::uniform_real_distribution<float> dist(GOD_EVAL_INTERVAL_MIN, GOD_EVAL_INTERVAL_MAX);
+    godEvalRemaining_ = dist(rng_);
+}
+
+void Game::drainStaleGodDecision() {
+    GodDecision discarded;
+    if (god_->tryTakeDecision(discarded)) {
+        // Drop late results after timeout/cancel.
+    }
+}
+
+void Game::beginGodEvaluation(const std::string& trigger, const std::string& playerMessage, int gameTime) {
+    if (mode_ == GameMode::AwaitingGod || god_->isBusy()) {
+        return;
+    }
     syncRecentEvents(world_, events_);
-    const GodDecision decision = god_->evaluate(world_);
-    if (decision.action == GodActionType::None) {
+    heldDecision_.reset();
+    awaitTimer_ = 0.0f;
+    flashPhase_ = 0.0f;
+    awaitGameTime_ = gameTime;
+    awaitTrigger_ = trigger;
+    god_->beginEvaluate(world_, trigger, playerMessage);
+    mode_ = GameMode::AwaitingGod;
+}
+
+void Game::showGodMessage(const std::string& message) {
+    if (message.empty()) {
+        return;
+    }
+    godMessage_ = message;
+    godMessageTimer_ = kGodMessageDuration;
+}
+
+void Game::applyCompletedDecision(const GodDecision& decision, int gameTime) {
+    if (decision.action == GodActionType::None && decision.favorDelta == 0) {
         return;
     }
     const GodApplyOutcome outcome = applyGodDecision(world_, decision, events_, generator_, gameTime);
     if (outcome.result == GodApplyResult::Applied && !outcome.displayMessage.empty()) {
-        godMessage_ = outcome.displayMessage;
-        godMessageTimer_ = kGodMessageDuration;
+        showGodMessage(outcome.displayMessage);
     }
     if (decision.action == GodActionType::RegenerateMaze && outcome.result == GodApplyResult::Applied) {
-        closeToExitTriggered_ = false;
         events_.record(EventType::MazeStarted, gameTime, "The player continues in a new maze.");
         syncRecentEvents(world_, events_);
     }
 }
 
-bool Game::isCloseToExit() const {
-    if (auto d = world_.maze.bfsDistance(world_.player.position, world_.maze.exitPosition())) {
-        return *d <= kCloseToExitDistance;
+void Game::finishAwait(const GodDecision& decision, int gameTime, bool timedOut) {
+    if (timedOut) {
+        showGodMessage("The heavens are silent.");
+    } else if (decision.action == GodActionType::None && awaitTrigger_ == "shrine") {
+        showGodMessage("The heavens are silent.");
+    } else {
+        applyCompletedDecision(decision, gameTime);
     }
-    return manhattan(world_.player.position, world_.maze.exitPosition()) <= kCloseToExitDistance;
+    heldDecision_.reset();
+    awaitTrigger_.clear();
+    mode_ = GameMode::Playing;
+    scheduleNextAmbientEval();
 }
 
 void Game::onPlayerDeath(int gameTime) {
     events_.record(EventType::PlayerDied, gameTime, "The player died.");
     world_.profile.deaths += 1;
+    world_.godFavor = addGodFavor(world_.godFavor, -1);
     syncRecentEvents(world_, events_);
-    const uint32_t seedBefore = world_.mazeSeed;
-    requestGodEvaluation(gameTime);
-    if (world_.mazeSeed == seedBefore) {
-        restartCurrentMaze(world_, generator_, events_, gameTime);
-    } else {
-        world_.player.health = PLAYER_MAX_HEALTH;
-    }
+    restartCurrentMaze(world_, generator_, events_, gameTime);
     events_.record(EventType::MazeStarted, gameTime, "The maze restarted after death.");
     syncRecentEvents(world_, events_);
 }
@@ -87,10 +184,6 @@ void Game::tryKillAdjacentEnemy(int gameTime) {
             desc << "Player killed an enemy at (" << enemy.position.x << ", " << enemy.position.y << ").";
             events_.record(EventType::EnemyKilled, gameTime, desc.str());
             syncRecentEvents(world_, events_);
-            if (world_.profile.enemiesKilled - lastKillEvalCount_ >= 3) {
-                lastKillEvalCount_ = world_.profile.enemiesKilled;
-                requestGodEvaluation(gameTime);
-            }
             return;
         }
     }
@@ -106,7 +199,6 @@ void Game::updateShrines(int gameTime) {
             desc << "Player reached shrine at (" << shrine->position.x << ", " << shrine->position.y << ").";
             events_.record(EventType::PlayerReachedShrine, gameTime, desc.str());
             syncRecentEvents(world_, events_);
-            requestGodEvaluation(gameTime);
         }
     }
 }
@@ -119,7 +211,49 @@ void Game::checkExit(int gameTime) {
     }
 }
 
-void Game::handleInput(float dt) {
+void Game::handleComposeInput() {
+    if (!nearShrine_) {
+        prayerBuffer_.clear();
+        mode_ = GameMode::Playing;
+        return;
+    }
+
+    if (IsKeyPressed(KEY_ESCAPE)) {
+        prayerBuffer_.clear();
+        mode_ = GameMode::Playing;
+        return;
+    }
+
+    int codepoint = GetCharPressed();
+    while (codepoint > 0) {
+        if (codepoint >= 32 && codepoint < 127 && static_cast<int>(prayerBuffer_.size()) < PRAYER_MAX_CHARS) {
+            prayerBuffer_.push_back(static_cast<char>(codepoint));
+        }
+        codepoint = GetCharPressed();
+    }
+
+    if (IsKeyPressed(KEY_BACKSPACE) && !prayerBuffer_.empty()) {
+        prayerBuffer_.pop_back();
+    }
+
+    if (IsKeyPressed(KEY_ENTER) && !prayerBuffer_.empty()) {
+        const int gameTime = static_cast<int>(elapsed_);
+        if (Shrine* shrine = findNearbyShrine(world_.shrines, world_.player.position)) {
+            shrine->visited = true;
+        }
+        world_.profile.godInteractions += 1;
+        world_.godFavor = addGodFavor(world_.godFavor, 1);
+        std::ostringstream desc;
+        desc << "Player spoke to the God at a shrine: \"" << prayerBuffer_ << "\".";
+        events_.record(EventType::PlayerCommunicatedWithGod, gameTime, desc.str());
+        syncRecentEvents(world_, events_);
+        const std::string message = prayerBuffer_;
+        prayerBuffer_.clear();
+        beginGodEvaluation("shrine", message, gameTime);
+    }
+}
+
+void Game::handlePlayingInput(float dt) {
     const int gameTime = static_cast<int>(elapsed_);
     world_.player.moveCooldown -= dt;
     if (world_.player.moveCooldown < 0.0f) {
@@ -150,33 +284,22 @@ void Game::handleInput(float dt) {
             }
             checkExit(gameTime);
             updateShrines(gameTime);
-
-            if (auto d = world_.maze.bfsDistance(world_.player.position, world_.maze.exitPosition())) {
-                if (*d <= kCloseToExitDistance && !closeToExitTriggered_) {
-                    closeToExitTriggered_ = true;
-                    requestGodEvaluation(gameTime);
-                } else if (*d >= kCloseToExitResetDistance) {
-                    closeToExitTriggered_ = false;
-                }
-            }
         }
     }
 
     if (IsKeyPressed(KEY_E) && nearShrine_) {
-        if (Shrine* shrine = findNearbyShrine(world_.shrines, world_.player.position)) {
-            shrine->visited = true;
-        }
-        world_.profile.godInteractions += 1;
-        events_.record(EventType::PlayerCommunicatedWithGod, gameTime, "Player spoke to the God at a shrine.");
-        syncRecentEvents(world_, events_);
-        requestGodEvaluation(gameTime);
+        prayerBuffer_.clear();
+        mode_ = GameMode::ComposingPrayer;
     }
 
     if (IsKeyPressed(KEY_SPACE)) {
         tryKillAdjacentEnemy(gameTime);
     }
-}
 
+    if (IsKeyPressed(KEY_L)) {
+        lineOfSightActive_ = !lineOfSightActive_;
+    }
+}
 void Game::stepEnemies(float dt) {
     const int gameTime = static_cast<int>(elapsed_);
     for (Enemy& enemy : world_.enemies) {
@@ -223,12 +346,6 @@ void Game::update(float dt) {
         world_.godPower = addGodPower(world_.godPower, 1);
     }
 
-    godEvalTimer_ += dt;
-    if (godEvalTimer_ >= GOD_EVALUATION_INTERVAL) {
-        godEvalTimer_ = 0.0f;
-        requestGodEvaluation(gameTime);
-    }
-
     if (godMessageTimer_ > 0.0f) {
         godMessageTimer_ -= dt;
         if (godMessageTimer_ <= 0.0f) {
@@ -236,7 +353,47 @@ void Game::update(float dt) {
         }
     }
 
-    handleInput(dt);
+    if (mode_ == GameMode::AwaitingGod) {
+        awaitTimer_ += dt;
+        flashPhase_ += dt;
+
+        GodDecision arrived;
+        if (!heldDecision_ && god_->tryTakeDecision(arrived)) {
+            heldDecision_ = arrived;
+        }
+
+        const bool ready = heldDecision_.has_value() && awaitTimer_ >= GOD_AWAIT_MIN_FLASH;
+        const bool timedOut = awaitTimer_ >= GOD_AWAIT_TIMEOUT;
+        if (ready) {
+            finishAwait(*heldDecision_, awaitGameTime_, false);
+        } else if (timedOut) {
+            god_->cancel();
+            drainStaleGodDecision();
+            finishAwait(GodDecision{}, awaitGameTime_, true);
+        }
+        nearShrine_ = findNearbyShrine(world_.shrines, world_.player.position) != nullptr;
+        return;
+    }
+
+    drainStaleGodDecision();
+
+    if (mode_ == GameMode::ComposingPrayer) {
+        handleComposeInput();
+        nearShrine_ = findNearbyShrine(world_.shrines, world_.player.position) != nullptr;
+        return;
+    }
+
+    godEvalRemaining_ -= dt;
+    if (godEvalRemaining_ <= 0.0f) {
+        beginGodEvaluation("ambient", "", gameTime);
+        if (mode_ == GameMode::AwaitingGod) {
+            nearShrine_ = findNearbyShrine(world_.shrines, world_.player.position) != nullptr;
+            return;
+        }
+        scheduleNextAmbientEval();
+    }
+
+    handlePlayingInput(dt);
     if (!escaped_) {
         stepEnemies(dt);
         nearShrine_ = findNearbyShrine(world_.shrines, world_.player.position) != nullptr;
@@ -244,6 +401,9 @@ void Game::update(float dt) {
 }
 
 void Game::draw() {
+    const int screenW = GetScreenWidth();
+    const int screenH = GetScreenHeight();
+
     BeginDrawing();
     ClearBackground(BLACK);
 
@@ -251,14 +411,21 @@ void Game::draw() {
     camera.target = {
         world_.player.position.x * static_cast<float>(kCellSize) + kCellSize / 2.0f,
         world_.player.position.y * static_cast<float>(kCellSize) + kCellSize / 2.0f};
-    camera.offset = {kScreenWidth / 2.0f, kScreenHeight / 2.0f};
+    camera.offset = {screenW / 2.0f, screenH / 2.0f};
     camera.rotation = 0.0f;
     camera.zoom = 1.0f;
 
+    const std::vector<char> visibility =
+        lineOfSightActive_ ? computeVisibility(world_.maze, world_.player.position)
+                           : std::vector<char>{};
+    const auto canSee = [&](GridPosition p) {
+        return !lineOfSightActive_ || isVisible(visibility, world_.maze, p);
+    };
+
     BeginMode2D(camera);
 
-    const int viewCellsX = kScreenWidth / kCellSize + 4;
-    const int viewCellsY = kScreenHeight / kCellSize + 4;
+    const int viewCellsX = screenW / kCellSize + 4;
+    const int viewCellsY = screenH / kCellSize + 4;
     const int minX = std::max(0, world_.player.position.x - viewCellsX / 2);
     const int maxX = std::min(world_.maze.width() - 1, world_.player.position.x + viewCellsX / 2);
     const int minY = std::max(0, world_.player.position.y - viewCellsY / 2);
@@ -266,6 +433,9 @@ void Game::draw() {
 
     for (int y = minY; y <= maxY; ++y) {
         for (int x = minX; x <= maxX; ++x) {
+            if (lineOfSightActive_ && !isVisible(visibility, world_.maze, x, y)) {
+                continue;
+            }
             const Rectangle cell{
                 static_cast<float>(x * kCellSize),
                 static_cast<float>(y * kCellSize),
@@ -274,22 +444,25 @@ void Game::draw() {
             if (world_.maze.cellAt(x, y) == CellType::Wall) {
                 DrawRectangleRec(cell, Color{50, 50, 55, 255});
             } else {
-                DrawRectangleRec(cell, Color{12, 12, 16, 255});
+                DrawRectangleRec(cell, Color{18, 18, 24, 255});
             }
         }
     }
 
     const auto drawCell = [](GridPosition p, Color color) {
-        DrawRectangle(
-            p.x * kCellSize + 1, p.y * kCellSize + 1, kCellSize - 2, kCellSize - 2, color);
+        DrawRectangle(p.x * kCellSize + 1, p.y * kCellSize + 1, kCellSize - 2, kCellSize - 2, color);
     };
 
-    drawCell(world_.maze.exitPosition(), Color{40, 180, 70, 255});
+    if (canSee(world_.maze.exitPosition())) {
+        drawCell(world_.maze.exitPosition(), Color{40, 180, 70, 255});
+    }
     for (const Shrine& shrine : world_.shrines) {
-        drawCell(shrine.position, Color{150, 70, 200, 255});
+        if (canSee(shrine.position)) {
+            drawCell(shrine.position, Color{150, 70, 200, 255});
+        }
     }
     for (const Enemy& enemy : world_.enemies) {
-        if (enemy.active) {
+        if (enemy.active && canSee(enemy.position)) {
             drawCell(enemy.position, Color{200, 50, 50, 255});
         }
     }
@@ -298,22 +471,52 @@ void Game::draw() {
     EndMode2D();
 
     DrawText(TextFormat("HP: %d", world_.player.health), 16, 16, 24, RAYWHITE);
+    DrawText(TextFormat("Favor: %d", world_.godFavor), 16, 44, 18, favorTint(world_.godFavor));
+    DrawText(lineOfSightActive_ ? "LOS: ON [L]" : "LOS: OFF [L]", 16, 68, 16, LIGHTGRAY);
 
-    if (nearShrine_ && !escaped_) {
-        const char* prompt = "Press E to speak to the God";
-        const int width = MeasureText(prompt, 20);
-        DrawText(prompt, (kScreenWidth - width) / 2, kScreenHeight - 56, 20, Color{200, 160, 255, 255});
+    if (mode_ == GameMode::AwaitingGod) {
+        const float favorNorm =
+            static_cast<float>(world_.godFavor - MIN_GOD_FAVOR) / static_cast<float>(MAX_GOD_FAVOR - MIN_GOD_FAVOR);
+        const float speed = 4.0f + (1.0f - std::clamp(favorNorm, 0.0f, 1.0f)) * 4.0f;
+        const float pulse = 0.5f + 0.5f * std::sin(flashPhase_ * speed);
+        const float alpha = 0.12f + 0.22f * pulse;
+        Color tint = favorTint(world_.godFavor);
+        tint.a = static_cast<unsigned char>(alpha * 255.0f);
+        DrawRectangle(0, 0, screenW, screenH, tint);
+        const char* waiting = "The God considers...";
+        const int width = MeasureText(waiting, 28);
+        DrawText(waiting, (screenW - width) / 2, 24, 28, RAYWHITE);
     }
 
-    const char* hints = nearShrine_ ? "[WASD] Move    [E] Interact    [Space] Attack"
-                                    : "[WASD] Move    [Space] Attack";
-    const int hintWidth = MeasureText(hints, 16);
-    DrawText(hints, (kScreenWidth - hintWidth) / 2, kScreenHeight - 28, 16, LIGHTGRAY);
+    if (mode_ == GameMode::ComposingPrayer) {
+        const int boxW = std::min(620, screenW - 40);
+        const int boxH = 120;
+        const int boxX = (screenW - boxW) / 2;
+        const int boxY = screenH - boxH - 40;
+        DrawRectangle(boxX, boxY, boxW, boxH, Fade(BLACK, 0.9f));
+        DrawRectangleLines(boxX, boxY, boxW, boxH, Color{200, 160, 255, 255});
+        DrawText("Speak, mortal:", boxX + 16, boxY + 14, 20, Color{200, 160, 255, 255});
+        std::string shown = prayerBuffer_;
+        shown.push_back('_');
+        DrawText(shown.c_str(), boxX + 16, boxY + 52, 22, RAYWHITE);
+        DrawText("[Enter] Send   [Esc] Cancel", boxX + 16, boxY + 88, 16, LIGHTGRAY);
+    } else if (nearShrine_ && !escaped_ && mode_ == GameMode::Playing) {
+        const char* prompt = "Press E to speak to the God";
+        const int width = MeasureText(prompt, 20);
+        DrawText(prompt, (screenW - width) / 2, screenH - 56, 20, Color{200, 160, 255, 255});
+    }
+
+    if (mode_ == GameMode::Playing) {
+        const char* hints = nearShrine_ ? "[WASD] Move  [E] Pray  [Space] Attack  [L] LOS  [F11] Fullscreen"
+                                        : "[WASD] Move  [Space] Attack  [L] LOS  [F11] Fullscreen";
+        const int hintWidth = MeasureText(hints, 16);
+        DrawText(hints, (screenW - hintWidth) / 2, screenH - 28, 16, LIGHTGRAY);
+    }
 
     if (!godMessage_.empty() && godMessageTimer_ > 0.0f) {
-        const int boxW = 540;
+        const int boxW = std::min(540, screenW - 40);
         const int boxH = 110;
-        const int boxX = (kScreenWidth - boxW) / 2;
+        const int boxX = (screenW - boxW) / 2;
         const int boxY = 48;
         DrawRectangle(boxX, boxY, boxW, boxH, Fade(BLACK, 0.88f));
         DrawRectangleLines(boxX, boxY, boxW, boxH, LIGHTGRAY);
@@ -322,10 +525,10 @@ void Game::draw() {
     }
 
     if (escaped_) {
-        DrawRectangle(0, 0, kScreenWidth, kScreenHeight, Fade(BLACK, 0.55f));
+        DrawRectangle(0, 0, screenW, screenH, Fade(BLACK, 0.55f));
         const char* text = "YOU ESCAPED";
         const int width = MeasureText(text, 48);
-        DrawText(text, (kScreenWidth - width) / 2, kScreenHeight / 2 - 24, 48, GREEN);
+        DrawText(text, (screenW - width) / 2, screenH / 2 - 24, 48, GREEN);
     }
 
     EndDrawing();

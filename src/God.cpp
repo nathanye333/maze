@@ -4,6 +4,7 @@
 #include "MazeGenerator.h"
 
 #include <algorithm>
+#include <cctype>
 #include <random>
 #include <sstream>
 
@@ -27,6 +28,14 @@ int addGodPower(int current, int amount) {
     return std::max(0, std::min(MAX_GOD_POWER, current + amount));
 }
 
+int addGodFavor(int current, int amount) {
+    return std::max(MIN_GOD_FAVOR, std::min(MAX_GOD_FAVOR, current + amount));
+}
+
+int clampFavorDelta(int delta) {
+    return std::max(-MAX_FAVOR_DELTA, std::min(MAX_FAVOR_DELTA, delta));
+}
+
 bool isValidTeleportParameter(const std::string& parameter) {
     return parameter == "random_safe" || parameter == "dead_end" || parameter == "far_from_exit" ||
            parameter == "near_enemy";
@@ -34,6 +43,87 @@ bool isValidTeleportParameter(const std::string& parameter) {
 
 bool isValidSpawnParameter(const std::string& parameter) {
     return parameter == "random" || parameter == "near_player" || parameter == "far_from_player";
+}
+
+namespace {
+
+std::string trimAscii(std::string_view text) {
+    size_t begin = 0;
+    while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin]))) {
+        ++begin;
+    }
+    size_t end = text.size();
+    while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+        --end;
+    }
+    return std::string(text.substr(begin, end - begin));
+}
+
+std::string extractJsonObject(std::string_view text) {
+    std::string cleaned = trimAscii(text);
+    if (cleaned.rfind("```", 0) == 0) {
+        const size_t firstNl = cleaned.find('\n');
+        if (firstNl != std::string::npos) {
+            cleaned = cleaned.substr(firstNl + 1);
+        }
+        const size_t fence = cleaned.rfind("```");
+        if (fence != std::string::npos) {
+            cleaned = cleaned.substr(0, fence);
+        }
+        cleaned = trimAscii(cleaned);
+    }
+    const size_t start = cleaned.find('{');
+    const size_t end = cleaned.rfind('}');
+    if (start == std::string::npos || end == std::string::npos || end < start) {
+        return {};
+    }
+    return cleaned.substr(start, end - start + 1);
+}
+
+GodActionType parseActionName(std::string_view name) {
+    if (name == "none") {
+        return GodActionType::None;
+    }
+    if (name == "regenerate_maze") {
+        return GodActionType::RegenerateMaze;
+    }
+    if (name == "teleport_player") {
+        return GodActionType::TeleportPlayer;
+    }
+    if (name == "spawn_enemy") {
+        return GodActionType::SpawnEnemy;
+    }
+    if (name == "send_message") {
+        return GodActionType::SendMessage;
+    }
+    return GodActionType::None;
+}
+
+}  // namespace
+
+bool parseGodDecisionJson(std::string_view text, GodDecision& out) {
+    out = GodDecision{};
+    const std::string jsonText = extractJsonObject(text);
+    if (jsonText.empty()) {
+        return false;
+    }
+
+    try {
+        const nlohmann::json json = nlohmann::json::parse(jsonText);
+        if (!json.is_object()) {
+            return false;
+        }
+        const std::string action = json.value("action", "none");
+        out.action = parseActionName(action);
+        out.parameter = json.value("parameter", "");
+        out.message = json.value("message", "");
+        out.powerCost = expectedPowerCost(out.action);
+        out.favorDelta = clampFavorDelta(json.value("favor_delta", 0));
+        return true;
+    } catch (...) {
+        out = GodDecision{};
+        return false;
+    }
 }
 
 namespace {
@@ -204,9 +294,14 @@ GodApplyOutcome applyGodDecision(
     int gameTime) {
     GodApplyOutcome outcome;
 
+    auto finishApplied = [&](GodApplyOutcome applied) {
+        world.godFavor = addGodFavor(world.godFavor, clampFavorDelta(decision.favorDelta));
+        return applied;
+    };
+
     if (decision.action == GodActionType::None) {
         outcome.result = GodApplyResult::Applied;
-        return outcome;
+        return finishApplied(outcome);
     }
 
     const int cost = expectedPowerCost(decision.action);
@@ -226,7 +321,7 @@ GodApplyOutcome applyGodDecision(
             syncRecentEvents(world, events);
             outcome.result = GodApplyResult::Applied;
             outcome.displayMessage = decision.message;
-            return outcome;
+            return finishApplied(outcome);
         }
         case GodActionType::SpawnEnemy: {
             if (!isValidSpawnParameter(decision.parameter) || activeEnemyCount(world.enemies) >= MAX_ENEMIES) {
@@ -244,7 +339,7 @@ GodApplyOutcome applyGodDecision(
             events.record(EventType::EnemySpawned, gameTime, desc.str());
             syncRecentEvents(world, events);
             outcome.result = GodApplyResult::Applied;
-            return outcome;
+            return finishApplied(outcome);
         }
         case GodActionType::TeleportPlayer: {
             if (!isValidTeleportParameter(decision.parameter)) {
@@ -264,7 +359,7 @@ GodApplyOutcome applyGodDecision(
             events.record(EventType::PlayerTeleported, gameTime, desc.str());
             syncRecentEvents(world, events);
             outcome.result = GodApplyResult::Applied;
-            return outcome;
+            return finishApplied(outcome);
         }
         case GodActionType::RegenerateMaze: {
             const uint32_t newSeed = world.mazeSeed * 1664525u + 1013904223u + 1u;
@@ -275,7 +370,7 @@ GodApplyOutcome applyGodDecision(
             events.record(EventType::MazeRegenerated, gameTime, "The maze was regenerated by the God.");
             syncRecentEvents(world, events);
             outcome.result = GodApplyResult::Applied;
-            return outcome;
+            return finishApplied(outcome);
         }
         case GodActionType::None:
             break;

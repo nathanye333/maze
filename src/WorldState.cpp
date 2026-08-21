@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <random>
+#include <string_view>
 
 void populateEntities(WorldState& world, uint32_t seed) {
     std::mt19937 rng(seed ^ 0x9E3779B9u);
@@ -76,7 +77,7 @@ void syncRecentEvents(WorldState& world, const EventSystem& events) {
     world.recentEvents = events.recent();
 }
 
-nlohmann::json toJson(const WorldState& world) {
+nlohmann::json toJson(const WorldState& world, std::string_view trigger, std::string_view playerMessage) {
     nlohmann::json profile = {
         {"enemies_killed", world.profile.enemiesKilled},
         {"damage_taken", world.profile.damageTaken},
@@ -91,7 +92,8 @@ nlohmann::json toJson(const WorldState& world) {
         events.push_back(event.description);
     }
 
-    return {
+    nlohmann::json payload = {
+        {"trigger", std::string(trigger)},
         {"player",
          {{"health", world.player.health},
           {"position", {world.player.position.x, world.player.position.y}}}},
@@ -103,4 +105,10 @@ nlohmann::json toJson(const WorldState& world) {
         {"god", {{"favor", world.godFavor}, {"power", world.godPower}}},
         {"recent_events", events},
     };
+    if (playerMessage.empty()) {
+        payload["player_message"] = nullptr;
+    } else {
+        payload["player_message"] = std::string(playerMessage);
+    }
+    return payload;
 }

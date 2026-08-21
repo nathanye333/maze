@@ -2,14 +2,20 @@
 
 #include "God.h"
 
+#include <optional>
+
 class MockGod : public God {
 public:
-    GodDecision evaluate(const WorldState& world) override;
+    void beginEvaluate(
+        const WorldState& world, std::string_view trigger, std::string_view playerMessage) override;
+    bool isBusy() const override;
+    bool tryTakeDecision(GodDecision& out) override;
 
 private:
-    int lastGodInteractions_ = 0;
+    GodDecision decide(const WorldState& world, std::string_view trigger, std::string_view playerMessage);
+
+    std::optional<GodDecision> pending_;
     int lastMessageDamageBand_ = 0;
     int lastSpawnKillCount_ = -1;
-    int lastTeleportInteractions_ = 0;
     uint32_t lastRegenSeed_ = 0;
 };
