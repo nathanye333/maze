@@ -20,6 +20,7 @@ void runCombatTests(int& passed, int& failed) {
     CHECK(isRegisteredWeapon("sword"), "sword is registered");
     CHECK(isRegisteredWeapon("gun"), "gun is registered");
     CHECK(world.weaponPickups.size() == 2, "maze spawns sword and gun pickups");
+    CHECK(!isWeaponPickupOnShrine(world.weaponPickups, world.shrines), "initial weapon spawns avoid shrines");
 
     Enemy& enemy = world.enemies.front();
     enemy.active = true;
@@ -139,4 +140,22 @@ void runCombatTests(int& passed, int& failed) {
 
     world.inventory = PlayerInventory{};
     CHECK(!tryPlayerAttack(world, events, 31, world.combatVisuals), "unarmed player cannot attack");
+
+    const GridPosition shrinePos = world.shrines.front().position;
+    world.player.position = shrinePos;
+    world.inventory = PlayerInventory{};
+    world.weaponPickups.clear();
+    world.weaponPickups.push_back(WeaponPickup{shrinePos, "sword", false});
+    CHECK(tryCollectWeaponPickups(world, events, 40), "pickup works when weapon is on shrine tile");
+    CHECK(ownsWeapon(world.inventory, "sword"), "shrine tile pickup enters inventory");
+
+    world.player.position = world.maze.start();
+    world.inventory = PlayerInventory{};
+    addWeaponToInventory(world.inventory, "gun");
+    CHECK(tryDropEquippedWeapon(world, events, 41), "G drops equipped weapon");
+    CHECK(findWeaponPickupAt(world.weaponPickups, world.player.position) != nullptr, "dropped weapon is on ground");
+    CHECK(!ownsWeapon(world.inventory, "gun"), "dropped weapon leaves inventory");
+
+    addWeaponToInventory(world.inventory, "sword");
+    CHECK(!tryDropEquippedWeapon(world, events, 42), "cannot drop onto occupied pickup tile");
 }

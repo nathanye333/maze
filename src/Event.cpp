@@ -12,6 +12,8 @@ std::string eventTypeName(EventType type) {
             return "PLAYER_ATTACKED";
         case EventType::WeaponPickedUp:
             return "WEAPON_PICKED_UP";
+        case EventType::WeaponDropped:
+            return "WEAPON_DROPPED";
         case EventType::PlayerDamaged:
             return "PLAYER_DAMAGED";
         case EventType::PlayerDied:

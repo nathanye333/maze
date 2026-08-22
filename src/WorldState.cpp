@@ -40,7 +40,15 @@ void populateEntities(WorldState& world, uint32_t seed) {
         world.enemies.push_back(enemy);
     }
 
-    spawnDefaultWeaponPickups(world.weaponPickups, world.maze, seed);
+    std::vector<GridPosition> excludedSpots;
+    excludedSpots.reserve(world.shrines.size() + world.enemies.size());
+    for (const Shrine& shrine : world.shrines) {
+        excludedSpots.push_back(shrine.position);
+    }
+    for (const Enemy& enemy : world.enemies) {
+        excludedSpots.push_back(enemy.position);
+    }
+    spawnDefaultWeaponPickups(world.weaponPickups, world.maze, seed, excludedSpots);
 }
 
 void rebuildMaze(WorldState& world, MazeGenerator& gen, uint32_t seed, bool keepHealth) {

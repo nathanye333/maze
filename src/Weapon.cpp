@@ -68,6 +68,21 @@ bool addWeaponToInventory(PlayerInventory& inventory, std::string_view weaponId)
     return true;
 }
 
+bool dropEquippedWeapon(PlayerInventory& inventory, std::string& outWeaponId) {
+    if (inventory.equippedIndex < 0 ||
+        inventory.equippedIndex >= static_cast<int>(inventory.weaponIds.size())) {
+        return false;
+    }
+    outWeaponId = inventory.weaponIds[static_cast<size_t>(inventory.equippedIndex)];
+    inventory.weaponIds.erase(inventory.weaponIds.begin() + inventory.equippedIndex);
+    if (inventory.weaponIds.empty()) {
+        inventory.equippedIndex = -1;
+    } else if (inventory.equippedIndex >= static_cast<int>(inventory.weaponIds.size())) {
+        inventory.equippedIndex = static_cast<int>(inventory.weaponIds.size()) - 1;
+    }
+    return true;
+}
+
 void equipWeaponIndex(PlayerInventory& inventory, int index) {
     if (index >= 0 && index < static_cast<int>(inventory.weaponIds.size())) {
         inventory.equippedIndex = index;

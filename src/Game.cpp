@@ -116,6 +116,28 @@ Color weaponPickupColor(const std::string& weaponId) {
     return Color{180, 180, 190, 255};
 }
 
+bool isShrineCell(const std::vector<Shrine>& shrines, GridPosition position) {
+    for (const Shrine& shrine : shrines) {
+        if (shrine.position == position) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void drawWeaponPickupMarker(GridPosition position, Color color, bool onShrine) {
+    if (onShrine) {
+        DrawRectangle(
+            position.x * kCellSize + kCellSize - 7,
+            position.y * kCellSize + 1,
+            6,
+            6,
+            color);
+    } else {
+        DrawRectangle(position.x * kCellSize + 1, position.y * kCellSize + 1, kCellSize - 2, kCellSize - 2, color);
+    }
+}
+
 void drawCombatAnimations(const CombatVisualState& visuals) {
     for (const CombatAnimation& animation : visuals.active) {
         const float t = animation.elapsed / animation.duration;
@@ -384,12 +406,16 @@ void Game::handlePlayingInput(float dt) {
     }
 
     if (IsKeyPressed(KEY_E)) {
-        if (nearShrine_) {
+        if (findWeaponPickupAt(world_.weaponPickups, world_.player.position) != nullptr) {
+            tryCollectWeaponPickups(world_, events_, gameTime);
+        } else if (nearShrine_) {
             prayerBuffer_.clear();
             mode_ = GameMode::ComposingPrayer;
-        } else {
-            tryCollectWeaponPickups(world_, events_, gameTime);
         }
+    }
+
+    if (IsKeyPressed(KEY_G)) {
+        tryDropEquippedWeapon(world_, events_, gameTime);
     }
 
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -554,7 +580,10 @@ void Game::draw() {
     }
     for (const WeaponPickup& pickup : world_.weaponPickups) {
         if (!pickup.collected && canSee(pickup.position)) {
-            drawCell(pickup.position, weaponPickupColor(pickup.weaponId));
+            drawWeaponPickupMarker(
+                pickup.position,
+                weaponPickupColor(pickup.weaponId),
+                isShrineCell(world_.shrines, pickup.position));
         }
     }
     for (const Enemy& enemy : world_.enemies) {
@@ -631,21 +660,22 @@ void Game::draw() {
         shown.push_back('_');
         DrawText(shown.c_str(), boxX + 16, boxY + 52, 22, RAYWHITE);
         DrawText("[Enter] Send   [Esc] Cancel", boxX + 16, boxY + 88, 16, LIGHTGRAY);
+    } else if (
+        findWeaponPickupAt(world_.weaponPickups, world_.player.position) != nullptr && !escaped_ &&
+        mode_ == GameMode::Playing) {
+        const char* prompt = nearShrine_ ? "Press E to pick up (shrine nearby)"
+                                         : "Press E to pick up";
+        const int width = MeasureText(prompt, 20);
+        DrawText(prompt, (screenW - width) / 2, screenH - 56, 20, RAYWHITE);
     } else if (nearShrine_ && !escaped_ && mode_ == GameMode::Playing) {
         const char* prompt = "Press E to speak to the God";
         const int width = MeasureText(prompt, 20);
         DrawText(prompt, (screenW - width) / 2, screenH - 56, 20, Color{200, 160, 255, 255});
-    } else if (
-        findWeaponPickupAt(world_.weaponPickups, world_.player.position) != nullptr && !escaped_ &&
-        mode_ == GameMode::Playing) {
-        const char* prompt = "Press E to pick up";
-        const int width = MeasureText(prompt, 20);
-        DrawText(prompt, (screenW - width) / 2, screenH - 56, 20, RAYWHITE);
     }
 
     if (mode_ == GameMode::Playing) {
         drawCrosshair(GetMousePosition());
-        const char* hints = "[WASD] Move  [LMB] Attack  [1-9] Equip  [E] Pick up  [F11] Fullscreen";
+        const char* hints = "[WASD] Move  [LMB] Attack  [1-9] Equip  [E] Pick up  [G] Drop  [F11] Fullscreen";
         const int hintWidth = MeasureText(hints, 16);
         DrawText(hints, (screenW - hintWidth) / 2, screenH - 28, 16, LIGHTGRAY);
     }

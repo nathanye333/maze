@@ -8,6 +8,7 @@ enum class EventType {
     EnemyKilled,
     PlayerAttacked,
     WeaponPickedUp,
+    WeaponDropped,
     PlayerDamaged,
     PlayerDied,
     PlayerReachedShrine,
