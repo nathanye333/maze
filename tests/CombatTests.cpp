@@ -128,7 +128,7 @@ void runCombatTests(int& passed, int& failed) {
     world.weaponPickups.clear();
     world.inventory = PlayerInventory{};
     world.weaponPickups.push_back(pickup);
-    CHECK(tryCollectWeaponPickups(world, events, 30), "walking over pickup collects weapon");
+    CHECK(tryCollectWeaponPickups(world, events, 30), "E pickup collects weapon on same tile");
     CHECK(ownsWeapon(world.inventory, "sword"), "inventory contains collected weapon");
 
     addWeaponToInventory(world.inventory, "gun");

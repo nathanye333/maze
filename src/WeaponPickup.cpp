@@ -29,6 +29,15 @@ void spawnDefaultWeaponPickups(std::vector<WeaponPickup>& pickups, const Maze& m
     }
 }
 
+const WeaponPickup* findWeaponPickupAt(const std::vector<WeaponPickup>& pickups, GridPosition position) {
+    for (const WeaponPickup& pickup : pickups) {
+        if (!pickup.collected && pickup.position == position) {
+            return &pickup;
+        }
+    }
+    return nullptr;
+}
+
 bool tryCollectWeaponPickups(WorldState& world, EventSystem& events, int gameTime) {
     bool collectedAny = false;
     for (WeaponPickup& pickup : world.weaponPickups) {

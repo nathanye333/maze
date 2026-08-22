@@ -374,7 +374,12 @@ void Game::handlePlayingInput(float dt) {
             }
             checkExit(gameTime);
             updateShrines(gameTime);
-            tryCollectWeaponPickups(world_, events_, gameTime);
+        }
+    }
+
+    for (int slot = 0; slot < 9; ++slot) {
+        if (IsKeyPressed(KEY_ONE + slot)) {
+            equipWeaponIndex(world_.inventory, slot);
         }
     }
 
@@ -382,8 +387,8 @@ void Game::handlePlayingInput(float dt) {
         if (nearShrine_) {
             prayerBuffer_.clear();
             mode_ = GameMode::ComposingPrayer;
-        } else if (!world_.inventory.weaponIds.empty()) {
-            cycleEquippedWeapon(world_.inventory);
+        } else {
+            tryCollectWeaponPickups(world_, events_, gameTime);
         }
     }
 
@@ -630,12 +635,17 @@ void Game::draw() {
         const char* prompt = "Press E to speak to the God";
         const int width = MeasureText(prompt, 20);
         DrawText(prompt, (screenW - width) / 2, screenH - 56, 20, Color{200, 160, 255, 255});
+    } else if (
+        findWeaponPickupAt(world_.weaponPickups, world_.player.position) != nullptr && !escaped_ &&
+        mode_ == GameMode::Playing) {
+        const char* prompt = "Press E to pick up";
+        const int width = MeasureText(prompt, 20);
+        DrawText(prompt, (screenW - width) / 2, screenH - 56, 20, RAYWHITE);
     }
 
     if (mode_ == GameMode::Playing) {
         drawCrosshair(GetMousePosition());
-        const char* hints = nearShrine_ ? "[WASD] Move  [LMB] Attack  [E] Interact  [F11] Fullscreen"
-                                        : "[WASD] Move  [LMB] Attack  [E] Equip  [F11] Fullscreen";
+        const char* hints = "[WASD] Move  [LMB] Attack  [1-9] Equip  [E] Pick up  [F11] Fullscreen";
         const int hintWidth = MeasureText(hints, 16);
         DrawText(hints, (screenW - hintWidth) / 2, screenH - 28, 16, LIGHTGRAY);
     }
