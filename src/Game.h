@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CombatAnimation.h"
 #include "EventSystem.h"
 #include "God.h"
 #include "MazeGenerator.h"
@@ -34,7 +35,7 @@ private:
     void finishAwait(const GodDecision& decision, int gameTime, bool timedOut);
     void showGodMessage(const std::string& message);
     void onPlayerDeath(int gameTime);
-    void tryKillAdjacentEnemy(int gameTime);
+    void updateAimFromMouse();
     void scheduleNextAmbientEval();
     void drainStaleGodDecision();
 

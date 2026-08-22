@@ -2,6 +2,7 @@
 
 #include "EventSystem.h"
 #include "MazeGenerator.h"
+#include "WeaponPickup.h"
 
 #include <algorithm>
 #include <random>
@@ -20,7 +21,11 @@ void populateEntities(WorldState& world, uint32_t seed) {
 
     world.shrines.clear();
     world.enemies.clear();
+    world.projectiles.clear();
+    world.combatVisuals.active.clear();
+    world.inventory = PlayerInventory{};
     world.nextEnemyId = 1;
+    world.nextProjectileId = 1;
 
     size_t index = 0;
     for (int i = 0; i < SHRINE_COUNT && index < spots.size(); ++i, ++index) {
@@ -31,8 +36,19 @@ void populateEntities(WorldState& world, uint32_t seed) {
         enemy.id = world.nextEnemyId++;
         enemy.position = spots[index];
         enemy.active = true;
+        enemy.health = ENEMY_MAX_HEALTH;
         world.enemies.push_back(enemy);
     }
+
+    std::vector<GridPosition> excludedSpots;
+    excludedSpots.reserve(world.shrines.size() + world.enemies.size());
+    for (const Shrine& shrine : world.shrines) {
+        excludedSpots.push_back(shrine.position);
+    }
+    for (const Enemy& enemy : world.enemies) {
+        excludedSpots.push_back(enemy.position);
+    }
+    spawnDefaultWeaponPickups(world.weaponPickups, world.maze, seed, excludedSpots);
 }
 
 void rebuildMaze(WorldState& world, MazeGenerator& gen, uint32_t seed, bool keepHealth) {

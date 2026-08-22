@@ -50,6 +50,11 @@ set(CORE_SOURCES
     src/WorldState.cpp
     src/God.cpp
     src/MockGod.cpp
+    src/Weapon.cpp
+    src/WeaponPickup.cpp
+    src/Projectile.cpp
+    src/CombatAnimation.cpp
+    src/Combat.cpp
 )
 
 add_library(qwen_maze_core STATIC ${CORE_SOURCES})
@@ -82,6 +87,7 @@ add_executable(qwen-maze-tests
     tests/MazeTests.cpp
     tests/EventTests.cpp
     tests/GodTests.cpp
+    tests/CombatTests.cpp
 )
 target_include_directories(qwen-maze-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(qwen-maze-tests PRIVATE qwen_maze_core)

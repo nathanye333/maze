@@ -1,16 +1,20 @@
 #include "Game.h"
 
+#include "Combat.h"
 #include "Enemy.h"
 #include "MockGod.h"
 #include "OllamaGod.h"
 #include "Player.h"
 #include "Shrine.h"
 #include "Vision.h"
+#include "Weapon.h"
+#include "WeaponPickup.h"
 
 #include <raylib.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -57,6 +61,24 @@ std::unique_ptr<God> makeGod() {
     return std::make_unique<OllamaGod>(host, port, model);
 }
 
+bool envFlagEnabled(const char* name, bool defaultValue) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return defaultValue;
+    }
+    std::string flag = value;
+    for (char& ch : flag) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (flag == "1" || flag == "true" || flag == "yes" || flag == "on") {
+        return true;
+    }
+    if (flag == "0" || flag == "false" || flag == "no" || flag == "off") {
+        return false;
+    }
+    return defaultValue;
+}
+
 Color favorTint(int favor) {
     const float t = (static_cast<float>(favor - MIN_GOD_FAVOR) / static_cast<float>(MAX_GOD_FAVOR - MIN_GOD_FAVOR));
     const float clamped = std::clamp(t, 0.0f, 1.0f);
@@ -76,9 +98,103 @@ Color favorTint(int favor) {
         255};
 }
 
+Camera2D makeCamera(int screenW, int screenH, GridPosition playerPos) {
+    Camera2D camera{};
+    camera.target = {
+        playerPos.x * static_cast<float>(kCellSize) + kCellSize / 2.0f,
+        playerPos.y * static_cast<float>(kCellSize) + kCellSize / 2.0f};
+    camera.offset = {screenW / 2.0f, screenH / 2.0f};
+    camera.rotation = 0.0f;
+    camera.zoom = 1.0f;
+    return camera;
+}
+
+Color weaponPickupColor(const std::string& weaponId) {
+    if (weaponId == "gun") {
+        return Color{220, 140, 40, 255};
+    }
+    return Color{180, 180, 190, 255};
+}
+
+bool isShrineCell(const std::vector<Shrine>& shrines, GridPosition position) {
+    for (const Shrine& shrine : shrines) {
+        if (shrine.position == position) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void drawWeaponPickupMarker(GridPosition position, Color color, bool onShrine) {
+    if (onShrine) {
+        DrawRectangle(
+            position.x * kCellSize + kCellSize - 7,
+            position.y * kCellSize + 1,
+            6,
+            6,
+            color);
+    } else {
+        DrawRectangle(position.x * kCellSize + 1, position.y * kCellSize + 1, kCellSize - 2, kCellSize - 2, color);
+    }
+}
+
+void drawCombatAnimations(const CombatVisualState& visuals) {
+    for (const CombatAnimation& animation : visuals.active) {
+        const float t = animation.elapsed / animation.duration;
+        const unsigned char alpha = static_cast<unsigned char>((1.0f - t) * 255.0f);
+        const float cx = animation.origin.x * static_cast<float>(kCellSize) + kCellSize / 2.0f;
+        const float cy = animation.origin.y * static_cast<float>(kCellSize) + kCellSize / 2.0f;
+
+        switch (animation.kind) {
+            case CombatAnimKind::SwordSwing: {
+                const float tx = cx + animation.facing.x * kCellSize * 0.6f;
+                const float ty = cy + animation.facing.y * kCellSize * 0.6f;
+                DrawLineEx({cx, cy}, {tx, ty}, 3.0f, Color{220, 220, 240, alpha});
+                break;
+            }
+            case CombatAnimKind::GunMuzzleFlash: {
+                const float fx = cx + animation.facing.x * kCellSize * 0.55f;
+                const float fy = cy + animation.facing.y * kCellSize * 0.55f;
+                DrawRectangle(
+                    static_cast<int>(fx - 3),
+                    static_cast<int>(fy - 3),
+                    6,
+                    6,
+                    Color{255, 230, 80, alpha});
+                break;
+            }
+            case CombatAnimKind::HitFlash: {
+                DrawRectangle(
+                    animation.origin.x * kCellSize + 1,
+                    animation.origin.y * kCellSize + 1,
+                    kCellSize - 2,
+                    kCellSize - 2,
+                    Color{255, 255, 255, static_cast<unsigned char>(alpha / 2)});
+                break;
+            }
+        }
+    }
+}
+
+void drawAimIndicator(GridPosition player, GridPosition facing) {
+    const float cx = player.x * static_cast<float>(kCellSize) + kCellSize / 2.0f;
+    const float cy = player.y * static_cast<float>(kCellSize) + kCellSize / 2.0f;
+    const float tx = cx + facing.x * kCellSize * 0.75f;
+    const float ty = cy + facing.y * kCellSize * 0.75f;
+    DrawLineEx({cx, cy}, {tx, ty}, 2.0f, Color{120, 170, 255, 180});
+    DrawCircleV({tx, ty}, 2.5f, Color{120, 170, 255, 220});
+}
+
+void drawCrosshair(Vector2 screenPos) {
+    DrawLineV({screenPos.x - 8.0f, screenPos.y}, {screenPos.x + 8.0f, screenPos.y}, Color{255, 255, 255, 210});
+    DrawLineV({screenPos.x, screenPos.y - 8.0f}, {screenPos.x, screenPos.y + 8.0f}, Color{255, 255, 255, 210});
+    DrawCircleLinesV(screenPos, 6.0f, Color{255, 255, 255, 180});
+}
+
 }  // namespace
 
 Game::Game() : god_(makeGod()), rng_(std::random_device{}()) {
+    lineOfSightActive_ = envFlagEnabled("QWEN_MAZE_LOS", true);
     initializeWorld(world_, generator_, events_, 1, 0);
     scheduleNextAmbientEval();
 }
@@ -88,6 +204,7 @@ void Game::run() {
     InitWindow(kScreenWidth, kScreenHeight, "Qwen Maze");
     SetWindowMinSize(640, 360);
     SetTargetFPS(60);
+    HideCursor();
 
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_F11)) {
@@ -97,6 +214,7 @@ void Game::run() {
         draw();
     }
 
+    ShowCursor();
     CloseWindow();
 }
 
@@ -172,21 +290,13 @@ void Game::onPlayerDeath(int gameTime) {
     syncRecentEvents(world_, events_);
 }
 
-void Game::tryKillAdjacentEnemy(int gameTime) {
-    for (Enemy& enemy : world_.enemies) {
-        if (!enemy.active) {
-            continue;
-        }
-        if (manhattan(enemy.position, world_.player.position) <= 1) {
-            enemy.active = false;
-            world_.profile.enemiesKilled += 1;
-            std::ostringstream desc;
-            desc << "Player killed an enemy at (" << enemy.position.x << ", " << enemy.position.y << ").";
-            events_.record(EventType::EnemyKilled, gameTime, desc.str());
-            syncRecentEvents(world_, events_);
-            return;
-        }
-    }
+void Game::updateAimFromMouse() {
+    const int screenW = GetScreenWidth();
+    const int screenH = GetScreenHeight();
+    const Camera2D camera = makeCamera(screenW, screenH, world_.player.position);
+    const Vector2 mouseWorld = GetScreenToWorld2D(GetMousePosition(), camera);
+    world_.inventory.facing =
+        computeAimFacing(world_.player.position, mouseWorld.x, mouseWorld.y, kCellSize);
 }
 
 void Game::updateShrines(int gameTime) {
@@ -255,6 +365,8 @@ void Game::handleComposeInput() {
 
 void Game::handlePlayingInput(float dt) {
     const int gameTime = static_cast<int>(elapsed_);
+    updateAimFromMouse();
+
     world_.player.moveCooldown -= dt;
     if (world_.player.moveCooldown < 0.0f) {
         world_.player.moveCooldown = 0.0f;
@@ -287,17 +399,27 @@ void Game::handlePlayingInput(float dt) {
         }
     }
 
-    if (IsKeyPressed(KEY_E) && nearShrine_) {
-        prayerBuffer_.clear();
-        mode_ = GameMode::ComposingPrayer;
+    for (int slot = 0; slot < 9; ++slot) {
+        if (IsKeyPressed(KEY_ONE + slot)) {
+            equipWeaponIndex(world_.inventory, slot);
+        }
     }
 
-    if (IsKeyPressed(KEY_SPACE)) {
-        tryKillAdjacentEnemy(gameTime);
+    if (IsKeyPressed(KEY_E)) {
+        if (findWeaponPickupAt(world_.weaponPickups, world_.player.position) != nullptr) {
+            tryCollectWeaponPickups(world_, events_, gameTime);
+        } else if (nearShrine_) {
+            prayerBuffer_.clear();
+            mode_ = GameMode::ComposingPrayer;
+        }
     }
 
-    if (IsKeyPressed(KEY_L)) {
-        lineOfSightActive_ = !lineOfSightActive_;
+    if (IsKeyPressed(KEY_G)) {
+        tryDropEquippedWeapon(world_, events_, gameTime);
+    }
+
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        tryPlayerAttack(world_, events_, gameTime, world_.combatVisuals);
     }
 }
 void Game::stepEnemies(float dt) {
@@ -395,6 +517,7 @@ void Game::update(float dt) {
 
     handlePlayingInput(dt);
     if (!escaped_) {
+        updateCombat(world_, events_, gameTime, dt, world_.combatVisuals);
         stepEnemies(dt);
         nearShrine_ = findNearbyShrine(world_.shrines, world_.player.position) != nullptr;
     }
@@ -407,13 +530,7 @@ void Game::draw() {
     BeginDrawing();
     ClearBackground(BLACK);
 
-    Camera2D camera{};
-    camera.target = {
-        world_.player.position.x * static_cast<float>(kCellSize) + kCellSize / 2.0f,
-        world_.player.position.y * static_cast<float>(kCellSize) + kCellSize / 2.0f};
-    camera.offset = {screenW / 2.0f, screenH / 2.0f};
-    camera.rotation = 0.0f;
-    camera.zoom = 1.0f;
+    const Camera2D camera = makeCamera(screenW, screenH, world_.player.position);
 
     const std::vector<char> visibility =
         lineOfSightActive_ ? computeVisibility(world_.maze, world_.player.position)
@@ -461,18 +578,61 @@ void Game::draw() {
             drawCell(shrine.position, Color{150, 70, 200, 255});
         }
     }
+    for (const WeaponPickup& pickup : world_.weaponPickups) {
+        if (!pickup.collected && canSee(pickup.position)) {
+            drawWeaponPickupMarker(
+                pickup.position,
+                weaponPickupColor(pickup.weaponId),
+                isShrineCell(world_.shrines, pickup.position));
+        }
+    }
     for (const Enemy& enemy : world_.enemies) {
         if (enemy.active && canSee(enemy.position)) {
-            drawCell(enemy.position, Color{200, 50, 50, 255});
+            const float hpRatio = std::clamp(
+                static_cast<float>(enemy.health) / static_cast<float>(ENEMY_MAX_HEALTH), 0.0f, 1.0f);
+            const unsigned char red = static_cast<unsigned char>(80 + hpRatio * 120);
+            drawCell(enemy.position, Color{red, 50, 50, 255});
+        }
+    }
+    for (const Projectile& projectile : world_.projectiles) {
+        if (projectile.active && canSee(projectile.cell)) {
+            DrawCircle(
+                projectile.cell.x * kCellSize + kCellSize / 2,
+                projectile.cell.y * kCellSize + kCellSize / 2,
+                3.0f,
+                Color{255, 240, 120, 255});
         }
     }
     drawCell(world_.player.position, Color{50, 110, 220, 255});
 
+    if (mode_ == GameMode::Playing && equippedWeapon(world_.inventory) != nullptr) {
+        drawAimIndicator(world_.player.position, world_.inventory.facing);
+    }
+    drawCombatAnimations(world_.combatVisuals);
+
     EndMode2D();
 
     DrawText(TextFormat("HP: %d", world_.player.health), 16, 16, 24, RAYWHITE);
-    DrawText(TextFormat("Favor: %d", world_.godFavor), 16, 44, 18, favorTint(world_.godFavor));
-    DrawText(lineOfSightActive_ ? "LOS: ON [L]" : "LOS: OFF [L]", 16, 68, 16, LIGHTGRAY);
+    if (const WeaponDef* weapon = equippedWeapon(world_.inventory)) {
+        DrawText(
+            TextFormat("Weapon: %s", weapon->name.c_str()),
+            16,
+            44,
+            18,
+            RAYWHITE);
+        if (world_.inventory.attackCooldown > 0.0f) {
+            DrawText(
+                TextFormat("Cooldown: %.1fs", world_.inventory.attackCooldown),
+                16,
+                66,
+                16,
+                LIGHTGRAY);
+        }
+    } else {
+        DrawText("Weapon: Unarmed — find sword or gun", 16, 44, 18, LIGHTGRAY);
+    }
+    DrawText(TextFormat("Favor: %d", world_.godFavor), 16, 90, 18, favorTint(world_.godFavor));
+    DrawText(lineOfSightActive_ ? "LOS: ON" : "LOS: OFF", 16, 114, 16, LIGHTGRAY);
 
     if (mode_ == GameMode::AwaitingGod) {
         const float favorNorm =
@@ -500,6 +660,13 @@ void Game::draw() {
         shown.push_back('_');
         DrawText(shown.c_str(), boxX + 16, boxY + 52, 22, RAYWHITE);
         DrawText("[Enter] Send   [Esc] Cancel", boxX + 16, boxY + 88, 16, LIGHTGRAY);
+    } else if (
+        findWeaponPickupAt(world_.weaponPickups, world_.player.position) != nullptr && !escaped_ &&
+        mode_ == GameMode::Playing) {
+        const char* prompt = nearShrine_ ? "Press E to pick up (shrine nearby)"
+                                         : "Press E to pick up";
+        const int width = MeasureText(prompt, 20);
+        DrawText(prompt, (screenW - width) / 2, screenH - 56, 20, RAYWHITE);
     } else if (nearShrine_ && !escaped_ && mode_ == GameMode::Playing) {
         const char* prompt = "Press E to speak to the God";
         const int width = MeasureText(prompt, 20);
@@ -507,8 +674,8 @@ void Game::draw() {
     }
 
     if (mode_ == GameMode::Playing) {
-        const char* hints = nearShrine_ ? "[WASD] Move  [E] Pray  [Space] Attack  [L] LOS  [F11] Fullscreen"
-                                        : "[WASD] Move  [Space] Attack  [L] LOS  [F11] Fullscreen";
+        drawCrosshair(GetMousePosition());
+        const char* hints = "[WASD] Move  [LMB] Attack  [1-9] Equip  [E] Pick up  [G] Drop  [F11] Fullscreen";
         const int hintWidth = MeasureText(hints, 16);
         DrawText(hints, (screenW - hintWidth) / 2, screenH - 28, 16, LIGHTGRAY);
     }
