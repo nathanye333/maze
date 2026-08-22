@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -58,6 +59,24 @@ std::unique_ptr<God> makeGod() {
 
     const std::string model = (modelEnv != nullptr && modelEnv[0] != '\0') ? modelEnv : "qwen3.6";
     return std::make_unique<OllamaGod>(host, port, model);
+}
+
+bool envFlagEnabled(const char* name, bool defaultValue) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return defaultValue;
+    }
+    std::string flag = value;
+    for (char& ch : flag) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (flag == "1" || flag == "true" || flag == "yes" || flag == "on") {
+        return true;
+    }
+    if (flag == "0" || flag == "false" || flag == "no" || flag == "off") {
+        return false;
+    }
+    return defaultValue;
 }
 
 Color favorTint(int favor) {
@@ -153,6 +172,7 @@ void drawCrosshair(Vector2 screenPos) {
 }  // namespace
 
 Game::Game() : god_(makeGod()), rng_(std::random_device{}()) {
+    lineOfSightActive_ = envFlagEnabled("QWEN_MAZE_LOS", true);
     initializeWorld(world_, generator_, events_, 1, 0);
     scheduleNextAmbientEval();
 }
@@ -358,23 +378,17 @@ void Game::handlePlayingInput(float dt) {
         }
     }
 
-    for (int slot = 0; slot < 9; ++slot) {
-        if (IsKeyPressed(KEY_ONE + slot)) {
-            equipWeaponIndex(world_.inventory, slot);
+    if (IsKeyPressed(KEY_E)) {
+        if (nearShrine_) {
+            prayerBuffer_.clear();
+            mode_ = GameMode::ComposingPrayer;
+        } else if (!world_.inventory.weaponIds.empty()) {
+            cycleEquippedWeapon(world_.inventory);
         }
-    }
-
-    if (IsKeyPressed(KEY_E) && nearShrine_) {
-        prayerBuffer_.clear();
-        mode_ = GameMode::ComposingPrayer;
     }
 
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
         tryPlayerAttack(world_, events_, gameTime, world_.combatVisuals);
-    }
-
-    if (IsKeyPressed(KEY_L)) {
-        lineOfSightActive_ = !lineOfSightActive_;
     }
 }
 void Game::stepEnemies(float dt) {
@@ -584,7 +598,7 @@ void Game::draw() {
         DrawText("Weapon: Unarmed — find sword or gun", 16, 44, 18, LIGHTGRAY);
     }
     DrawText(TextFormat("Favor: %d", world_.godFavor), 16, 90, 18, favorTint(world_.godFavor));
-    DrawText(lineOfSightActive_ ? "LOS: ON [L]" : "LOS: OFF [L]", 16, 114, 16, LIGHTGRAY);
+    DrawText(lineOfSightActive_ ? "LOS: ON" : "LOS: OFF", 16, 114, 16, LIGHTGRAY);
 
     if (mode_ == GameMode::AwaitingGod) {
         const float favorNorm =
@@ -620,8 +634,8 @@ void Game::draw() {
 
     if (mode_ == GameMode::Playing) {
         drawCrosshair(GetMousePosition());
-        const char* hints = nearShrine_ ? "[WASD] Move  [LMB] Attack  [1-9] Equip  [E] Pray  [L] LOS  [F11] Fullscreen"
-                                        : "[WASD] Move  [LMB] Attack  [1-9] Equip  [L] LOS  [F11] Fullscreen";
+        const char* hints = nearShrine_ ? "[WASD] Move  [LMB] Attack  [E] Interact  [F11] Fullscreen"
+                                        : "[WASD] Move  [LMB] Attack  [E] Equip  [F11] Fullscreen";
         const int hintWidth = MeasureText(hints, 16);
         DrawText(hints, (screenW - hintWidth) / 2, screenH - 28, 16, LIGHTGRAY);
     }

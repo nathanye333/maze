@@ -35,4 +35,5 @@ const WeaponDef* equippedWeapon(const PlayerInventory& inventory);
 bool ownsWeapon(const PlayerInventory& inventory, std::string_view weaponId);
 bool addWeaponToInventory(PlayerInventory& inventory, std::string_view weaponId);
 void equipWeaponIndex(PlayerInventory& inventory, int index);
+void cycleEquippedWeapon(PlayerInventory& inventory);
 void tickPlayerInventory(PlayerInventory& inventory, float dt);

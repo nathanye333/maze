@@ -74,6 +74,18 @@ void equipWeaponIndex(PlayerInventory& inventory, int index) {
     }
 }
 
+void cycleEquippedWeapon(PlayerInventory& inventory) {
+    if (inventory.weaponIds.empty()) {
+        return;
+    }
+    if (inventory.equippedIndex < 0) {
+        inventory.equippedIndex = 0;
+        return;
+    }
+    inventory.equippedIndex =
+        (inventory.equippedIndex + 1) % static_cast<int>(inventory.weaponIds.size());
+}
+
 void tickPlayerInventory(PlayerInventory& inventory, float dt) {
     if (inventory.attackCooldown > 0.0f) {
         inventory.attackCooldown -= dt;

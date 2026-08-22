@@ -131,6 +131,12 @@ void runCombatTests(int& passed, int& failed) {
     CHECK(tryCollectWeaponPickups(world, events, 30), "walking over pickup collects weapon");
     CHECK(ownsWeapon(world.inventory, "sword"), "inventory contains collected weapon");
 
+    addWeaponToInventory(world.inventory, "gun");
+    equipWeaponIndex(world.inventory, 0);
+    CHECK(equippedWeapon(world.inventory)->id == "sword", "equip selects sword");
+    cycleEquippedWeapon(world.inventory);
+    CHECK(equippedWeapon(world.inventory)->id == "gun", "cycle equips next weapon");
+
     world.inventory = PlayerInventory{};
     CHECK(!tryPlayerAttack(world, events, 31, world.combatVisuals), "unarmed player cannot attack");
 }
