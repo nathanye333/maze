@@ -1,10 +1,14 @@
 #pragma once
 
+#include "CombatAnimation.h"
 #include "Enemy.h"
 #include "Event.h"
 #include "Maze.h"
 #include "Player.h"
+#include "Projectile.h"
 #include "Shrine.h"
+#include "Weapon.h"
+#include "WeaponPickup.h"
 
 #include <nlohmann/json.hpp>
 
@@ -39,6 +43,12 @@ struct WorldState {
 
     PlayerProfile profile;
     int nextEnemyId = 1;
+
+    PlayerInventory inventory;
+    std::vector<WeaponPickup> weaponPickups;
+    std::vector<Projectile> projectiles;
+    CombatVisualState combatVisuals;
+    int nextProjectileId = 1;
 };
 
 class MazeGenerator;

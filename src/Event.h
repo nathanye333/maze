@@ -6,6 +6,8 @@ enum class EventType {
     MazeStarted,
     PlayerMoved,
     EnemyKilled,
+    PlayerAttacked,
+    WeaponPickedUp,
     PlayerDamaged,
     PlayerDied,
     PlayerReachedShrine,
